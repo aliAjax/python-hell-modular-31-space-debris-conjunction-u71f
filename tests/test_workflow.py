@@ -39,7 +39,11 @@ class WorkflowTest(unittest.TestCase):
             "maneuver_window": "2026-09-28T08:00:00Z/2026-09-28T09:00:00Z",
         }, "coordinator-1", "coordinator", item["version"])
         self.assertEqual(item["status"], "coordinating")
-        item = self.service.act(item["id"], "execute", {"command_ref": "CMD-7"}, "operator-1", "operator", item["version"])
+        item = self.service.act(item["id"], "issue_command", {"command_ref": "CMD-7"}, "coordinator-1", "coordinator", item["version"])
+        self.assertEqual(item["status"], "executing")
+        self.assertEqual(item["commands"][0]["status"], "in_transit")
+        item = self.service.act(item["id"], "receipt", {"command_ref": "CMD-7", "result": "executed"}, "operator-1", "operator", item["version"])
+        self.assertEqual(item["commands"][0]["receipt_status"], "executed")
         item = self.service.act(item["id"], "resolve", {"report_ref": "RPT-7"}, "coordinator-1", "coordinator", item["version"])
         self.assertEqual(item["status"], "resolved")
         self.assertGreaterEqual(len(item["audit"]), 5)

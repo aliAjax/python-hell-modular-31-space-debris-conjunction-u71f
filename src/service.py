@@ -49,9 +49,9 @@ class Service:
                 raise DomainError("region_mismatch", "不能处理其他区域的记录", 403)
         if action in rules.ACTION_REQUIRES_VERSION and expected_version is None:
             raise DomainError("expected_version_required", "该操作需要 expected_version", 400)
-        new_status, new_payload, event_payload = rules.apply_action(item, action, payload, actor, role)
+        new_status, new_payload, event_payload, effects = rules.apply_action(item, action, payload, actor, role)
         self.repository.apply_action(
-            item_id, action, actor, role, new_status, new_payload, event_payload, expected_version
+            item_id, action, actor, role, new_status, new_payload, event_payload, expected_version, effects
         )
         return self.get_item(item_id)
 
@@ -59,6 +59,7 @@ class Service:
         item = self.repository.get_item(item_id)
         item["sources"] = self.repository.list_sources(item_id)
         item["audit"] = self.repository.audit_trail(item_id)
+        item["commands"] = self.repository.list_commands(item_id)
         item["assessment"] = rules.assess(item["payload"])
         return item
 

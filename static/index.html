@@ -1,7 +1,20 @@
 <!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><title>太空碎片接近协调</title>
-<body><h1>太空碎片接近预警与规避协调</h1><p>服务已启动。使用 JSON API 创建接近事件、记录来源、执行评估和协调动作。</p><pre>GET /health
-GET /api/state
+<body><h1>太空碎片接近预警与规避协调</h1><p>服务已启动。使用 JSON API 创建接近事件、记录来源、评估风险，并把规避指令与运营方回执接成一条链。</p>
+<h2>接口</h2>
+<pre>GET  /health
+GET  /api/state
+GET  /api/items
+GET  /api/items/{id}
 POST /api/items
 POST /api/items/{id}/sources
-POST /api/items/{id}/actions</pre></body></html>
+POST /api/items/{id}/actions</pre>
+<h2>规避指令链</h2>
+<pre>approve        协调员批准规避方案与窗口（开始/结束）
+issue_command  协调员下发指令，同一物体同一时间只能有一条在途指令，窗口重叠返回 409
+receipt        运营方回执：executed 或 failed（失败需填 reason，退回协调）
+retry_command  协调员重试失败指令，沿用同一条指令，不重复占窗口
+reschedule     协调员调整规避窗口
+resolve        协调员结案（需已执行回执）
+report_revision 新观测重算等级，不再占优的指令作废并释放窗口</pre>
+<p>事件详情返回 <code>commands</code>（指令状态、占用窗口、回执状态）；<code>GET /api/state</code> 返回全部在途指令的占用窗口。</p></body></html>

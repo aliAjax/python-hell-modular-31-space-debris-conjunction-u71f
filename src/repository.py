@@ -70,6 +70,26 @@ class Repository:
                     event_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS commands (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER NOT NULL,
+                    command_ref TEXT NOT NULL UNIQUE,
+                    primary_object_id TEXT NOT NULL,
+                    secondary_object_id TEXT NOT NULL,
+                    window_start TEXT NOT NULL,
+                    window_end TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    receipt_status TEXT NOT NULL DEFAULT 'pending',
+                    receipt_reason TEXT,
+                    receipt_by TEXT,
+                    receipt_at TEXT,
+                    approved_level TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(item_id) REFERENCES items(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_commands_window
+                    ON commands(primary_object_id, status, window_start, window_end);
                 """
             )
         finally:
@@ -207,7 +227,20 @@ class Repository:
         finally:
             conn.close()
 
-    def apply_action(self, item_id, action, actor, role, new_status, new_payload, event_payload, expected_version=None):
+    def _window_clash(self, conn, primary_object_id, window_end, window_start, exclude_id=None):
+        query = (
+            "SELECT id, command_ref FROM commands "
+            "WHERE primary_object_id=? AND status='in_transit' "
+            "AND window_start < ? AND window_end > ?"
+        )
+        params = [primary_object_id, window_end, window_start]
+        if exclude_id is not None:
+            query += " AND id != ?"
+            params.append(exclude_id)
+        query += " LIMIT 1"
+        return conn.execute(query, params).fetchone()
+
+    def apply_action(self, item_id, action, actor, role, new_status, new_payload, event_payload, expected_version=None, effects=None):
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -216,6 +249,87 @@ class Repository:
                 raise NotFoundError("item_not_found", "业务实体不存在")
             if expected_version is not None and int(expected_version) != int(row["version"]):
                 raise ConflictError("version_conflict", "记录已被其他操作更新，请重新读取")
+            effects = effects or {}
+            if effects.get("command"):
+                cmd = effects["command"]
+                clash = self._window_clash(conn, cmd["primary_object_id"], cmd["window_end"], cmd["window_start"])
+                if clash:
+                    raise ConflictError(
+                        "window_conflict",
+                        "同一物体在该窗口已有在途指令，落选指令退回协调重排: %s" % clash["command_ref"],
+                    )
+                conn.execute(
+                    "INSERT INTO commands(item_id,command_ref,primary_object_id,secondary_object_id,window_start,window_end,status,receipt_status,receipt_reason,receipt_by,receipt_at,approved_level,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        item_id,
+                        cmd["command_ref"],
+                        cmd["primary_object_id"],
+                        cmd["secondary_object_id"],
+                        cmd["window_start"],
+                        cmd["window_end"],
+                        cmd["status"],
+                        cmd["receipt_status"],
+                        cmd["receipt_reason"],
+                        None,
+                        None,
+                        cmd["approved_level"],
+                        now_iso(),
+                        now_iso(),
+                    ),
+                )
+            if effects.get("receipt"):
+                receipt = effects["receipt"]
+                cur = conn.execute(
+                    "SELECT id FROM commands WHERE item_id=? AND command_ref=?",
+                    (item_id, receipt["command_ref"]),
+                ).fetchone()
+                if cur is None:
+                    raise NotFoundError("command_not_found", "回执对应的指令不存在")
+                if receipt["status"] == "executed":
+                    conn.execute(
+                        "UPDATE commands SET status='executed',receipt_status='executed',receipt_reason=NULL,receipt_by=?,receipt_at=?,updated_at=? WHERE id=?",
+                        (actor, now_iso(), now_iso(), cur["id"]),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE commands SET status='failed',receipt_status='failed',receipt_reason=?,receipt_by=?,receipt_at=?,updated_at=? WHERE id=?",
+                        (receipt["reason"], actor, now_iso(), now_iso(), cur["id"]),
+                    )
+            if effects.get("retry"):
+                retry = effects["retry"]
+                cur = conn.execute(
+                    "SELECT * FROM commands WHERE item_id=? AND command_ref=?",
+                    (item_id, retry["command_ref"]),
+                ).fetchone()
+                if cur is None:
+                    raise NotFoundError("command_not_found", "指令不存在")
+                if cur["status"] != "failed":
+                    raise ConflictError("command_not_failed", "只有失败退回的指令才能重试")
+                clash = self._window_clash(
+                    conn, cur["primary_object_id"], cur["window_end"], cur["window_start"], exclude_id=cur["id"]
+                )
+                if clash:
+                    raise ConflictError(
+                        "window_conflict",
+                        "重试窗口与在途指令冲突，退回协调重排: %s" % clash["command_ref"],
+                    )
+                conn.execute(
+                    "UPDATE commands SET status='in_transit',receipt_status='pending',receipt_reason=NULL,receipt_by=NULL,receipt_at=NULL,updated_at=? WHERE id=?",
+                    (now_iso(), cur["id"]),
+                )
+            if effects.get("void_in_transit"):
+                conn.execute(
+                    "UPDATE commands SET status='voided',receipt_reason=?,updated_at=? WHERE item_id=? AND status='in_transit'",
+                    (effects.get("void_reason"), now_iso(), item_id),
+                )
+            if action == "resolve":
+                done = conn.execute(
+                    "SELECT id FROM commands WHERE item_id=? AND status='executed' LIMIT 1",
+                    (item_id,),
+                ).fetchone()
+                if done is None:
+                    raise DomainError("receipt_required", "运营方尚未回执确认指令执行结果", 409)
             version = int(row["version"]) + 1
             conn.execute(
                 "UPDATE items SET status=?,version=?,payload=?,updated_at=? WHERE id=?",
@@ -234,6 +348,25 @@ class Repository:
             except sqlite3.Error:
                 pass
             raise
+        finally:
+            conn.close()
+
+    def list_commands(self, item_id):
+        conn = self.connect()
+        try:
+            rows = conn.execute("SELECT * FROM commands WHERE item_id=? ORDER BY id", (item_id,)).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def occupied_windows(self):
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT item_id,command_ref,primary_object_id,window_start,window_end "
+                "FROM commands WHERE status='in_transit' ORDER BY window_start"
+            ).fetchall()
+            return [dict(row) for row in rows]
         finally:
             conn.close()
 
@@ -256,6 +389,6 @@ class Repository:
             counts = {}
             for row in conn.execute("SELECT status, COUNT(*) AS total FROM items GROUP BY status").fetchall():
                 counts[row["status"]] = row["total"]
-            return {"counts": counts, "items": self.list_items()}
+            return {"counts": counts, "items": self.list_items(), "occupied_windows": self.occupied_windows()}
         finally:
             conn.close()
