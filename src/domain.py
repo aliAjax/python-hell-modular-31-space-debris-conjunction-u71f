@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class DomainError(Exception):
@@ -112,3 +112,40 @@ def normalize_source(payload):
         "region": region,
         "operator": payload.get("operator"),
     }
+
+
+def parse_instant(value):
+    """解析 ISO 8601 时刻，无时区时按 UTC 处理，返回带时区的 datetime。"""
+    if not isinstance(value, str) or not value.strip():
+        raise DomainError("invalid_timestamp", "时间必须是 ISO 字符串")
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        instant = datetime.fromisoformat(text)
+    except ValueError:
+        raise DomainError("invalid_timestamp", "时间必须是 ISO 字符串：%s" % value)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(timezone.utc)
+
+
+def parse_window(value):
+    """解析 ISO 8601 时间区间 start/end，返回 (start, end, 归一化字符串)。
+
+    半开区间：[start, end)；允许端点相接（end == start 不算重叠）。
+    """
+    if not isinstance(value, str) or "/" not in value:
+        raise DomainError("invalid_window", "机动窗口格式必须为 start/end 的 ISO 区间")
+    start_text, end_text = (part.strip() for part in value.split("/", 1))
+    start = parse_instant(start_text)
+    end = parse_instant(end_text)
+    if end <= start:
+        raise DomainError("invalid_window", "机动窗口结束时间必须晚于开始时间")
+    normalized = "%s/%s" % (
+        start.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+        end.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+    )
+    return start, end, normalized
+
+
+def windows_overlap(start_a, end_a, start_b, end_b):
+    return start_a < end_b and start_b < end_a

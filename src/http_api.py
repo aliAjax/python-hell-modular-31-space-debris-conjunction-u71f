@@ -55,6 +55,15 @@ def build_handler(service, static_dir):
                 parts = [part for part in path.split("/") if part]
                 if len(parts) == 3 and parts[:2] == ["api", "items"]:
                     return self._send(200, service.get_item(int(parts[2])))
+                if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "commands":
+                    item = service.get_item(int(parts[2]))
+                    return self._send(200, {
+                        "item_id": item["id"],
+                        "status": item["status"],
+                        "in_flight_command": item["in_flight_command"],
+                        "occupied_windows": item["occupied_windows"],
+                        "commands": item["commands"],
+                    })
                 if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "audit":
                     item = service.get_item(int(parts[2]))
                     return self._send(200, {"events": item["audit"]})

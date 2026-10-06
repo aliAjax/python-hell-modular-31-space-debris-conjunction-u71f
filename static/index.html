@@ -1,7 +1,15 @@
 <!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><title>太空碎片接近协调</title>
-<body><h1>太空碎片接近预警与规避协调</h1><p>服务已启动。使用 JSON API 创建接近事件、记录来源、执行评估和协调动作。</p><pre>GET /health
-GET /api/state
+<body><h1>太空碎片接近预警与规避协调</h1>
+<p>接近事件、规避指令、运营方回执已接成一条链。协调员批准即下达指令，同一卫星同一时间只允许一条在途指令；重叠窗口由事务仲裁，落选退回协调重排。</p>
+<pre>GET  /health
+GET  /api/state
+GET  /api/items
 POST /api/items
 POST /api/items/{id}/sources
-POST /api/items/{id}/actions</pre></body></html>
+POST /api/items/{id}/actions        # assess/approve/receipt/retry/void_command/report_revision/...
+GET  /api/items/{id}                # 详情含 in_flight_command、occupied_windows、commands（回执状态）
+GET  /api/items/{id}/commands       # 指令链与回执
+GET  /api/items/{id}/audit</pre>
+<p>approve 请求体示例：<code>{"fuel_cost_m_s": 2.5, "maneuver_window": "2026-09-28T08:00:00Z/2026-09-28T09:00:00Z"}</code>（需带头 <code>X-User-Id</code>、<code>X-Role: coordinator</code>、<code>expected_version</code>）</p>
+</body></html>
